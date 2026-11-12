@@ -152,8 +152,7 @@ It checks upcoming meeting and task reminders and sends notifications to the con
 
 Software Engineering Graduate
 
-- Portfolio: https://dua-mirani-portfolio.vercel.app/
-- LinkedIn: https://www.linkedin.com/in/dua-mirani-a4468025b/
+
 
 ---
 
