@@ -1,0 +1,16 @@
+
+from typing import TypedDict, Optional
+
+
+class MeetFlowState(TypedDict):
+    """Shared state for the MeetFlow AI agent workflow."""
+
+    user_message: str
+    intent: Optional[str]
+    tool_name: Optional[str]
+    tool_input: Optional[dict]
+    tool_result: Optional[str]
+    final_response: Optional[str]
+    requires_confirmation: bool
+    validation_result: Optional[dict]
+    error: Optional[str]

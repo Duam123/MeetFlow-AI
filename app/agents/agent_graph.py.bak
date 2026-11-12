@@ -1,0 +1,76 @@
+
+from langgraph.graph import StateGraph, START, END
+
+from app.agents.agent_state import MeetFlowState
+
+from app.agents.agent_nodes import (
+    intent_detection_node,
+    tool_selection_node,
+    tool_execution_node,
+    response_node,
+)
+
+
+def route_after_selection(state: MeetFlowState) -> str:
+    """Route requests safely."""
+
+    if state.get("error"):
+        return "response"
+
+    if not state.get("tool_name"):
+        return "response"
+
+    if state.get("requires_confirmation"):
+        return "response"
+
+    return "execute"
+
+
+def build_agent_graph():
+
+    workflow = StateGraph(MeetFlowState)
+
+    workflow.add_node("detect_intent", intent_detection_node)
+    workflow.add_node("select_tool", tool_selection_node)
+    workflow.add_node("execute_tool", tool_execution_node)
+    workflow.add_node("generate_response", response_node)
+
+    workflow.add_edge(START, "detect_intent")
+
+    workflow.add_edge("detect_intent", "select_tool")
+
+    workflow.add_conditional_edges(
+        "select_tool",
+        route_after_selection,
+        {
+            "execute": "execute_tool",
+            "response": "generate_response",
+        },
+    )
+
+    workflow.add_edge("execute_tool", "generate_response")
+
+    workflow.add_edge("generate_response", END)
+
+    return workflow.compile()
+
+
+meetflow_agent = build_agent_graph()
+
+
+def run_agent(user_message: str) -> dict:
+    """Run the MeetFlow AI agent."""
+
+    initial_state = {
+        "user_message": user_message,
+        "intent": None,
+        "tool_name": None,
+        "tool_input": {},
+        "tool_result": None,
+        "final_response": None,
+        "requires_confirmation": False,
+        "validation_result": None,
+        "error": None,
+    }
+
+    return meetflow_agent.invoke(initial_state)

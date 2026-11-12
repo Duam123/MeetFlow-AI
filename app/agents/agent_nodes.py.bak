@@ -1,0 +1,177 @@
+
+from app.llm.structured_output import generate_structured_output
+from app.tools.tool_registry import get_all_tools
+from app.agents.action_validator import validate_action_input
+
+
+READ_ONLY_INTENTS = {
+    "view_meetings",
+    "view_tasks",
+}
+
+
+def intent_detection_node(state: dict) -> dict:
+    """Use Qwen to understand the user's request."""
+
+    try:
+        result = generate_structured_output(state["user_message"])
+
+        return {
+            "intent": result["intent"],
+            "tool_name": result["tool_name"],
+            "tool_input": result["tool_input"],
+            "requires_confirmation": result["requires_confirmation"],
+            "validation_result": None,
+            "error": None,
+        }
+
+    except Exception as error:
+        return {
+            "intent": "unknown",
+            "tool_name": None,
+            "tool_input": {},
+            "requires_confirmation": False,
+            "validation_result": None,
+            "error": f"Intent detection failed: {error}",
+        }
+
+
+def tool_selection_node(state: dict) -> dict:
+    """Validate selected tool and required action details."""
+
+    intent = state.get("intent")
+    tool_name = state.get("tool_name")
+
+    if intent == "unknown" or not tool_name:
+        return {
+            "tool_name": None,
+            "validation_result": None,
+            "error": None,
+        }
+
+    available_tools = {
+        selected_tool.name: selected_tool
+        for selected_tool in get_all_tools()
+    }
+
+    if tool_name not in available_tools:
+        return {
+            "tool_name": None,
+            "validation_result": None,
+            "error": f"Tool not available: {tool_name}",
+        }
+
+    # Read-only operations can proceed without approval.
+    if intent in READ_ONLY_INTENTS:
+        return {
+            "requires_confirmation": False,
+            "validation_result": None,
+            "error": None,
+        }
+
+    # Validate required information for create/update operations.
+    validation = validate_action_input(
+        intent=intent,
+        tool_input=state.get("tool_input") or {},
+    )
+
+    return {
+        "requires_confirmation": True,
+        "validation_result": validation,
+        "error": None,
+    }
+
+
+def tool_execution_node(state: dict) -> dict:
+    """Execute approved read-only operations only."""
+
+    if state.get("requires_confirmation"):
+        return {
+            "tool_result": None,
+            "error": "This action requires confirmation.",
+        }
+
+    if state.get("intent") not in READ_ONLY_INTENTS:
+        return {
+            "tool_result": None,
+            "error": "Only read-only operations are allowed here.",
+        }
+
+    tool_name = state.get("tool_name")
+    tool_input = state.get("tool_input") or {}
+
+    available_tools = {
+        selected_tool.name: selected_tool
+        for selected_tool in get_all_tools()
+    }
+
+    selected_tool = available_tools.get(tool_name)
+
+    if selected_tool is None:
+        return {
+            "tool_result": None,
+            "error": "Selected tool does not exist.",
+        }
+
+    try:
+        result = selected_tool.invoke(tool_input)
+
+        return {
+            "tool_result": str(result),
+            "error": None,
+        }
+
+    except Exception as error:
+        return {
+            "tool_result": None,
+            "error": str(error),
+        }
+
+
+def response_node(state: dict) -> dict:
+    """Prepare a user-friendly final response."""
+
+    if state.get("error"):
+        response = state["error"]
+
+    elif state.get("intent") == "unknown":
+        response = (
+            "I can help you manage meetings and tasks. "
+            "Please tell me what you would like to do."
+        )
+
+    elif state.get("requires_confirmation"):
+        validation = state.get("validation_result") or {}
+
+        if not validation.get("valid"):
+            missing_fields = validation.get("missing_fields", [])
+            validation_error = validation.get("error")
+
+            if missing_fields:
+                response = (
+                    "I understood your request, but some required "
+                    "information is missing: "
+                    + ", ".join(missing_fields)
+                    + ". Please provide these details before approval."
+                )
+
+            else:
+                response = (
+                    "I understood your request, but it needs correction: "
+                    + str(validation_error)
+                )
+
+        else:
+            response = (
+                "Your request details are valid. "
+                "This action has not been executed yet. "
+                "It will require your confirmation before database changes."
+            )
+
+    elif state.get("tool_result"):
+        response = state["tool_result"]
+
+    else:
+        response = "No result was returned."
+
+    return {"final_response": response}

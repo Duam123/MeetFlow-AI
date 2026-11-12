@@ -1,0 +1,148 @@
+
+import json
+import re
+
+from app.llm.local_llm import tokenizer, generator
+
+
+ALLOWED_INTENTS = {
+    "view_meetings",
+    "create_meeting",
+    "update_meeting",
+    "view_tasks",
+    "create_task",
+    "update_task",
+    "unknown",
+}
+
+INTENT_TO_TOOL = {
+    "view_meetings": "view_meetings",
+    "create_meeting": "create_new_meeting",
+    "update_meeting": "update_existing_meeting",
+    "view_tasks": "view_tasks",
+    "create_task": "create_new_task",
+    "update_task": "update_existing_task",
+}
+
+
+def extract_json(response: str) -> dict:
+    """Extract JSON from Qwen's generated response."""
+
+    try:
+        return json.loads(response)
+
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", response, re.DOTALL)
+
+        if not match:
+            raise ValueError("Qwen did not return valid JSON.")
+
+        return json.loads(match.group())
+
+
+def generate_structured_output(user_message: str) -> dict:
+    """Generate and validate structured intent using Qwen."""
+
+    system_prompt = """
+You are the intent extraction engine for MeetFlow AI.
+
+Analyze the user's message and return ONLY valid JSON.
+
+Allowed intents:
+- view_meetings
+- create_meeting
+- update_meeting
+- view_tasks
+- create_task
+- update_task
+- unknown
+
+Available tools:
+- view_meetings
+- create_new_meeting
+- update_existing_meeting
+- view_tasks
+- create_new_task
+- update_existing_task
+
+JSON format:
+{
+    "intent": "view_tasks",
+    "tool_name": "view_tasks",
+    "tool_input": {},
+    "requires_confirmation": false
+}
+
+Rules:
+1. Never invent meeting or task details.
+2. If required information is missing, keep it out of tool_input.
+3. If the message is a greeting, casual conversation,
+   general question, or unrelated request, use:
+   intent = "unknown"
+   tool_name = null
+4. Select an intent only when the user clearly requests
+   a meeting or task operation.
+5. Set requires_confirmation to true for create and update requests.
+6. For read-only requests, set requires_confirmation to false.
+7. Return JSON only.
+"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
+    ]
+
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
+    output = generator(
+        prompt,
+        max_new_tokens=250,
+        do_sample=False,
+        return_full_text=False,
+        pad_token_id=tokenizer.eos_token_id,
+    )
+
+    response = output[0]["generated_text"].strip()
+
+    result = extract_json(response)
+
+    # Validate required JSON fields
+    required_keys = {
+        "intent",
+        "tool_name",
+        "tool_input",
+        "requires_confirmation",
+    }
+
+    if not required_keys.issubset(result):
+        raise ValueError("Required JSON fields are missing.")
+
+    # Validate intent
+    if result["intent"] not in ALLOWED_INTENTS:
+        raise ValueError("Invalid intent detected.")
+
+    # Validate tool input
+    if not isinstance(result["tool_input"], dict):
+        raise ValueError("tool_input must be a JSON object.")
+
+    # Validate confirmation flag
+    if not isinstance(result["requires_confirmation"], bool):
+        raise ValueError("requires_confirmation must be boolean.")
+
+    # Validate tool and intent mapping
+    expected_tool = INTENT_TO_TOOL.get(result["intent"])
+
+    if result["tool_name"] != expected_tool:
+        raise ValueError("Intent and tool mapping do not match.")
+
+    # Unknown requests must never select a tool
+    if result["intent"] == "unknown":
+        result["tool_name"] = None
+        result["tool_input"] = {}
+        result["requires_confirmation"] = False
+
+    return result
